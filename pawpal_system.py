@@ -2,8 +2,7 @@
 pawpal_system.py
 ----------------
 Logic layer for PawPal+.
-All backend classes live here: Owner, Pet, Task, TaskDetail, DailySchedule,
-and the Scheduler engine that builds a daily plan.
+Classes: Task, TaskDetail, Pet, Owner, DailySchedule, Scheduler.
 """
  
 from __future__ import annotations
@@ -14,98 +13,24 @@ from datetime import date, time
 from typing import Optional
  
  
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
- 
-@dataclass
-class Owner:
-    """Represents a pet owner."""
-    name: str
-    email: str
-    phone: str = ""
-    owner_id: str = field(default_factory=lambda: str(uuid.uuid4()))
- 
-    # --- relationships (populated at runtime, not stored in the dataclass) ---
-    _pets: list[Pet] = field(default_factory=list, repr=False, compare=False)
- 
-    def add_pet(self, pet: "Pet") -> None:
-        """Attach a Pet to this owner."""
-        pet.owner_id = self.owner_id
-        self._pets.append(pet)
- 
-    def get_pets(self) -> list["Pet"]:
-        """Return all pets belonging to this owner."""
-        return list(self._pets)
- 
- 
-@dataclass
-class Pet:
-    """Represents a pet being cared for."""
-    name: str
-    species: str          # e.g. "dog", "cat", "rabbit"
-    breed: str = ""
-    owner_id: str = ""
-    pet_id: str = field(default_factory=lambda: str(uuid.uuid4()))
- 
-    def get_schedule(self, on_date: date | None = None) -> "DailySchedule":
-        """Return (or create) a DailySchedule for this pet on *on_date*."""
-        on_date = on_date or date.today()
-        return DailySchedule(pet_id=self.pet_id, date=on_date)
- 
- 
-@dataclass
-class Task:
-    """
-    A single care activity (walk, feeding, medication, grooming, etc.).
-    Reusable template — the *when* and *where* live in TaskDetail.
-    """
-    task_type: str                    # e.g. "walk", "feeding", "medication"
-    duration_min: int                 # how long the task takes
-    priority: str = "medium"         # "high" | "medium" | "low"
-    is_recurring: bool = True         # daily by default
-    pet_id: str = ""
-    task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
- 
-    # Each Task has exactly one set of details
-    detail: Optional["TaskDetail"] = field(default=None, repr=False)
- 
-    def edit_task(
-        self,
-        task_type: str | None = None,
-        duration_min: int | None = None,
-        priority: str | None = None,
-        is_recurring: bool | None = None,
-    ) -> None:
-        """Update one or more fields on this task."""
-        if task_type is not None:
-            self.task_type = task_type
-        if duration_min is not None:
-            self.duration_min = duration_min
-        if priority is not None:
-            self.priority = priority
-        if is_recurring is not None:
-            self.is_recurring = is_recurring
- 
-    def delete_task(self, schedule: "DailySchedule") -> None:
-        """Remove this task from the given schedule."""
-        schedule.tasks = [t for t in schedule.tasks if t.task_id != self.task_id]
- 
+# ─────────────────────────────────────────────
+# Task
+# ─────────────────────────────────────────────
  
 @dataclass
 class TaskDetail:
     """
-    The specifics of *when* and *where* a task happens on a given day.
+    The when/where specifics of a task on a given day.
     Composed 1-to-1 with a Task.
     """
     task_id: str
-    scheduled_time: time              # e.g. time(8, 0) for 08:00
+    scheduled_time: time              # e.g. time(8, 0)  → 08:00
     location: str = ""               # e.g. "Riverside Park"
-    notes: str = ""                  # e.g. "Give 5mg tablet with food"
+    notes: str = ""                  # e.g. "Give 5 mg tablet with food"
     detail_id: str = field(default_factory=lambda: str(uuid.uuid4()))
  
     def get_summary(self) -> str:
-        """Return a human-readable one-liner for display in the schedule."""
+        """One-liner suitable for terminal or UI display."""
         time_str = self.scheduled_time.strftime("%I:%M %p")
         parts = [time_str]
         if self.location:
@@ -116,36 +41,238 @@ class TaskDetail:
  
  
 @dataclass
+class Task:
+    """
+    A single pet-care activity.
+ 
+    Attributes
+    ----------
+    task_type     : short label, e.g. "walk", "feeding", "medication"
+    description   : free-text detail, e.g. "Morning walk around the block"
+    duration_min  : how many minutes the activity takes
+    priority      : "high" | "medium" | "low"
+    is_recurring  : True = daily, False = one-off
+    is_completed  : toggled when the owner marks the task done
+    pet_id        : which pet this task belongs to
+    detail        : optional TaskDetail (when/where)
+    """
+    task_type: str
+    description: str
+    duration_min: int
+    priority: str = "medium"
+    is_recurring: bool = True
+    is_completed: bool = False
+    pet_id: str = ""
+    task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    detail: Optional[TaskDetail] = field(default=None, repr=False)
+ 
+    # ── mutators ──────────────────────────────
+ 
+    def edit_task(
+        self,
+        task_type: str | None = None,
+        description: str | None = None,
+        duration_min: int | None = None,
+        priority: str | None = None,
+        is_recurring: bool | None = None,
+    ) -> None:
+        """Update any subset of fields in place."""
+        if task_type is not None:
+            self.task_type = task_type
+        if description is not None:
+            self.description = description
+        if duration_min is not None:
+            self.duration_min = duration_min
+        if priority is not None:
+            self.priority = priority
+        if is_recurring is not None:
+            self.is_recurring = is_recurring
+ 
+    def mark_complete(self) -> None:
+        """Mark this task as done for today."""
+        self.is_completed = True
+ 
+    def mark_incomplete(self) -> None:
+        """Reset completion status."""
+        self.is_completed = False
+ 
+    def set_detail(self, scheduled_time: time, location: str = "", notes: str = "") -> TaskDetail:
+        """Create and attach a TaskDetail to this task; return it."""
+        self.detail = TaskDetail(
+            task_id=self.task_id,
+            scheduled_time=scheduled_time,
+            location=location,
+            notes=notes,
+        )
+        return self.detail
+ 
+    # ── display ───────────────────────────────
+ 
+    def display(self) -> str:
+        """Compact one-liner for terminal output."""
+        status = "✓" if self.is_completed else "○"
+        time_str = (
+            self.detail.scheduled_time.strftime("%I:%M %p")
+            if self.detail else "--:--   "
+        )
+        location = f" @ {self.detail.location}" if self.detail and self.detail.location else ""
+        notes    = f" | {self.detail.notes}"    if self.detail and self.detail.notes    else ""
+        return (
+            f"  [{status}] {time_str}  {self.task_type.upper():<12} "
+            f"{self.description}{location}{notes}  "
+            f"({self.duration_min} min, {self.priority})"
+        )
+ 
+ 
+# ─────────────────────────────────────────────
+# Pet
+# ─────────────────────────────────────────────
+ 
+@dataclass
+class Pet:
+    """
+    A pet being cared for.
+ 
+    Stores pet details and owns a list of Task objects.
+    """
+    name: str
+    species: str          # "dog" | "cat" | "rabbit" | …
+    breed: str = ""
+    age_years: float = 0.0
+    owner_id: str = ""
+    pet_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    _tasks: list[Task] = field(default_factory=list, repr=False, compare=False)
+ 
+    # ── task management ───────────────────────
+ 
+    def add_task(self, task: Task) -> None:
+        """Attach a task to this pet."""
+        task.pet_id = self.pet_id
+        self._tasks.append(task)
+ 
+    def remove_task(self, task_id: str) -> bool:
+        """Remove a task by ID; return True if found and removed."""
+        before = len(self._tasks)
+        self._tasks = [t for t in self._tasks if t.task_id != task_id]
+        return len(self._tasks) < before
+ 
+    def get_tasks(self) -> list[Task]:
+        """Return a copy of all tasks for this pet."""
+        return list(self._tasks)
+ 
+    def get_pending_tasks(self) -> list[Task]:
+        """Return tasks not yet marked complete."""
+        return [t for t in self._tasks if not t.is_completed]
+ 
+    def get_tasks_by_priority(self, priority: str) -> list[Task]:
+        """Return tasks matching a given priority level."""
+        return [t for t in self._tasks if t.priority == priority]
+ 
+    # ── display ───────────────────────────────
+ 
+    def summary(self) -> str:
+        breed_str = f" ({self.breed})" if self.breed else ""
+        age_str   = f", {self.age_years} yrs" if self.age_years else ""
+        return f"{self.name}{breed_str} — {self.species}{age_str}"
+ 
+ 
+# ─────────────────────────────────────────────
+# Owner
+# ─────────────────────────────────────────────
+ 
+@dataclass
+class Owner:
+    """
+    A pet owner who manages one or more pets.
+ 
+    The Scheduler retrieves all tasks by calling
+    owner.get_all_tasks(), which walks every pet's task list.
+    """
+    name: str
+    email: str
+    phone: str = ""
+    owner_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    _pets: list[Pet] = field(default_factory=list, repr=False, compare=False)
+ 
+    # ── pet management ────────────────────────
+ 
+    def add_pet(self, pet: Pet) -> Pet:
+        """Register a pet under this owner; return the pet."""
+        pet.owner_id = self.owner_id
+        self._pets.append(pet)
+        return pet
+ 
+    def remove_pet(self, pet_id: str) -> bool:
+        """Remove a pet by ID; return True if found."""
+        before = len(self._pets)
+        self._pets = [p for p in self._pets if p.pet_id != pet_id]
+        return len(self._pets) < before
+ 
+    def get_pets(self) -> list[Pet]:
+        """Return all pets belonging to this owner."""
+        return list(self._pets)
+ 
+    def find_pet_by_name(self, name: str) -> Pet | None:
+        """Case-insensitive name lookup; returns the first match."""
+        name_lower = name.lower()
+        return next((p for p in self._pets if p.name.lower() == name_lower), None)
+ 
+    # ── task aggregation ──────────────────────
+ 
+    def get_all_tasks(self) -> list[Task]:
+        """
+        Return every task across ALL of this owner's pets.
+        This is the primary method the Scheduler calls to build the daily plan.
+        """
+        tasks: list[Task] = []
+        for pet in self._pets:
+            tasks.extend(pet.get_tasks())
+        return tasks
+ 
+    def get_all_pending_tasks(self) -> list[Task]:
+        """All incomplete tasks across every pet."""
+        return [t for t in self.get_all_tasks() if not t.is_completed]
+ 
+ 
+# ─────────────────────────────────────────────
+# DailySchedule
+# ─────────────────────────────────────────────
+ 
+@dataclass
 class DailySchedule:
     """
-    Collects all Tasks for one pet on one date and generates an ordered plan.
+    Ordered daily plan for one pet on one calendar date.
     """
     pet_id: str
+    pet_name: str
     date: date
-    time_budget_min: int = 480        # 8 hours of care time available by default
+    time_budget_min: int = 480          # 8 hours default
     tasks: list[Task] = field(default_factory=list)
     schedule_id: str = field(default_factory=lambda: str(uuid.uuid4()))
  
     def add_task(self, task: Task) -> None:
-        """Add a task to this schedule."""
         self.tasks.append(task)
+ 
+    def total_time_used(self) -> int:
+        return sum(t.duration_min for t in self.tasks)
+ 
+    def time_remaining(self) -> int:
+        return self.time_budget_min - self.total_time_used()
  
     def generate_plan(self) -> list[Task]:
         """
-        Return an ordered list of tasks that fit within the time budget.
- 
-        Strategy (fill in Phase 4):
-          1. Sort by priority (high → medium → low).
-          2. Among equal priority, sort by duration (shortest first).
-          3. Walk the sorted list; include a task only if its duration fits
-             the remaining budget.
+        Sort tasks by priority then scheduled time;
+        include only tasks that fit within the time budget.
         """
-        # TODO (Phase 4): implement full scheduling logic
-        priority_order = {"high": 0, "medium": 1, "low": 2}
-        sorted_tasks = sorted(
-            self.tasks,
-            key=lambda t: (priority_order.get(t.priority, 99), t.duration_min),
-        )
+        PRIORITY = {"high": 0, "medium": 1, "low": 2}
+ 
+        def sort_key(t: Task):
+            p = PRIORITY.get(t.priority, 99)
+            # secondary sort: scheduled time (tasks without a detail go last)
+            t_val = t.detail.scheduled_time if t.detail else time(23, 59)
+            return (p, t_val)
+ 
+        sorted_tasks = sorted(self.tasks, key=sort_key)
  
         plan: list[Task] = []
         remaining = self.time_budget_min
@@ -153,102 +280,165 @@ class DailySchedule:
             if task.duration_min <= remaining:
                 plan.append(task)
                 remaining -= task.duration_min
- 
         return plan
  
  
-# ---------------------------------------------------------------------------
-# Scheduler (orchestration helper)
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────
+# Scheduler  ← the "brain"
+# ─────────────────────────────────────────────
  
 class Scheduler:
     """
-    Top-level engine that ties owners, pets, tasks, and schedules together.
-    The Streamlit UI will talk primarily to this class.
+    Orchestration engine.  The Streamlit UI talks to this class.
+ 
+    How the Scheduler retrieves tasks from the Owner
+    ------------------------------------------------
+    scheduler.get_all_tasks(owner)
+        → calls owner.get_all_tasks()
+        → which calls pet.get_tasks() for every pet the owner has
+        → returns a flat list of every Task across all pets
+ 
+    From that list the Scheduler can filter, sort, and build per-pet
+    DailySchedule objects for any date.
     """
  
     def __init__(self) -> None:
         self._owners: dict[str, Owner] = {}
-        self._pets: dict[str, Pet] = {}
-        self._schedules: dict[str, DailySchedule] = {}   # keyed by schedule_id
+        self._schedules: dict[str, DailySchedule] = {}     # schedule_id → schedule
  
-    # -- Owner management --------------------------------------------------
+    # ── owner / pet registration ──────────────
  
-    def add_owner(self, owner: Owner) -> Owner:
-        """Register an owner and return it."""
+    def register_owner(self, owner: Owner) -> Owner:
         self._owners[owner.owner_id] = owner
         return owner
  
     def get_owner(self, owner_id: str) -> Owner | None:
         return self._owners.get(owner_id)
  
-    # -- Pet management ----------------------------------------------------
+    def add_pet_to_owner(self, pet: Pet, owner: Owner) -> Pet:
+        return owner.add_pet(pet)
  
-    def add_pet(self, pet: Pet, owner: Owner) -> Pet:
-        """Register a pet, link it to an owner, and return it."""
-        owner.add_pet(pet)
-        self._pets[pet.pet_id] = pet
-        return pet
+    # ── task retrieval ────────────────────────
  
-    def get_pet(self, pet_id: str) -> Pet | None:
-        return self._pets.get(pet_id)
+    def get_all_tasks(self, owner: Owner) -> list[Task]:
+        """
+        Retrieve every task for every pet owned by *owner*.
+        Entry point for building schedules.
+        """
+        return owner.get_all_tasks()
  
-    def list_pets(self, owner_id: str) -> list[Pet]:
-        return [p for p in self._pets.values() if p.owner_id == owner_id]
+    def get_tasks_for_pet(self, owner: Owner, pet_name: str) -> list[Task]:
+        """Return tasks for a single named pet."""
+        pet = owner.find_pet_by_name(pet_name)
+        return pet.get_tasks() if pet else []
  
-    # -- Schedule management -----------------------------------------------
+    def get_pending_tasks(self, owner: Owner) -> list[Task]:
+        """All incomplete tasks across every pet."""
+        return owner.get_all_pending_tasks()
  
-    def get_or_create_schedule(
-        self, pet: Pet, on_date: date | None = None
+    # ── schedule building ─────────────────────
+ 
+    def build_schedule_for_pet(
+        self,
+        pet: Pet,
+        on_date: date | None = None,
+        time_budget_min: int = 480,
     ) -> DailySchedule:
-        """Return an existing schedule for (pet, date) or create a new one."""
+        """
+        Create a DailySchedule for *pet* on *on_date*, register it,
+        and return the generated plan (tasks already sorted + filtered).
+        """
         on_date = on_date or date.today()
+ 
+        # Reuse an existing schedule if one already exists for (pet, date)
         for sched in self._schedules.values():
             if sched.pet_id == pet.pet_id and sched.date == on_date:
                 return sched
-        sched = DailySchedule(pet_id=pet.pet_id, date=on_date)
+ 
+        sched = DailySchedule(
+            pet_id=pet.pet_id,
+            pet_name=pet.name,
+            date=on_date,
+            time_budget_min=time_budget_min,
+        )
+        for task in pet.get_tasks():
+            sched.add_task(task)
+ 
         self._schedules[sched.schedule_id] = sched
         return sched
  
-    def add_task_to_schedule(
+    def build_all_schedules(
         self,
-        task: Task,
-        detail: TaskDetail,
-        schedule: DailySchedule,
-    ) -> None:
-        """Attach a TaskDetail to its Task, then add the Task to the schedule."""
-        task.detail = detail
-        schedule.add_task(task)
+        owner: Owner,
+        on_date: date | None = None,
+    ) -> list[DailySchedule]:
+        """Build one DailySchedule per pet for the given owner."""
+        on_date = on_date or date.today()
+        return [
+            self.build_schedule_for_pet(pet, on_date)
+            for pet in owner.get_pets()
+        ]
  
-    def build_plan(self, schedule: DailySchedule) -> list[Task]:
-        """Generate and return the ordered daily plan for a schedule."""
-        return schedule.generate_plan()
+    # ── formatting ────────────────────────────
  
-    def format_plan(self, schedule: DailySchedule) -> str:
+    def format_schedule(self, schedule: DailySchedule) -> str:
         """
-        Return a pretty-printed string of the daily plan.
-        Example output:
-            Daily plan for 2025-06-10:
-              08:00 AM — Morning walk (30 min) [priority: high] @ Riverside Park
-              09:00 AM — Feeding (10 min) [priority: high]
-        """
-        plan = self.build_plan(schedule)
-        if not plan:
-            return "No tasks scheduled for this day."
+        Pretty-print a single pet's daily schedule for terminal output.
  
-        lines = [f"Daily plan for {schedule.date}:"]
-        for task in plan:
-            detail = task.detail
-            time_str = (
-                detail.scheduled_time.strftime("%I:%M %p") if detail else "--:--"
-            )
-            location = f" @ {detail.location}" if detail and detail.location else ""
-            notes = f" ({detail.notes})" if detail and detail.notes else ""
-            lines.append(
-                f"  {time_str} — {task.task_type.title()} "
-                f"({task.duration_min} min) "
-                f"[priority: {task.priority}]"
-                f"{location}{notes}"
-            )
+        Example
+        -------
+        ┌─────────────────────────────────────────────────────┐
+        │  Biscuit (Golden Retriever)  ·  2025-06-10          │
+        │  Time budget: 480 min  |  Used: 75 min  |  Free: 405│
+        ├─────────────────────────────────────────────────────┤
+        │  [○] 07:30 AM  WALK         Morning walk @ Park     │
+        │  [○] 08:00 AM  FEEDING      Breakfast               │
+        └─────────────────────────────────────────────────────┘
+        """
+        plan = schedule.generate_plan()
+        width = 60
+ 
+        header = (
+            f"  {schedule.pet_name}  ·  {schedule.date}\n"
+            f"  Budget: {schedule.time_budget_min} min  |  "
+            f"Used: {schedule.total_time_used()} min  |  "
+            f"Free: {schedule.time_remaining()} min"
+        )
+ 
+        top    = "┌" + "─" * width + "┐"
+        mid    = "├" + "─" * width + "┤"
+        bottom = "└" + "─" * width + "┘"
+ 
+        def row(text: str) -> str:
+            return "│ " + text.ljust(width - 1) + "│"
+ 
+        lines = [top]
+        for header_line in header.splitlines():
+            lines.append(row(header_line))
+ 
+        if plan:
+            lines.append(mid)
+            for task in plan:
+                lines.append(row(task.display()))
+        else:
+            lines.append(mid)
+            lines.append(row("  (no tasks scheduled)"))
+ 
+        lines.append(bottom)
         return "\n".join(lines)
  
+    def format_all_schedules(
+        self, owner: Owner, on_date: date | None = None
+    ) -> str:
+        """Format today's schedule for every pet owned by *owner*."""
+        on_date = on_date or date.today()
+        schedules = self.build_all_schedules(owner, on_date)
+        if not schedules:
+            return "No pets registered."
+        sections = [
+            f"\n{'═' * 62}\n  TODAY'S SCHEDULE  —  {owner.name}\n{'═' * 62}"
+        ]
+        for sched in schedules:
+            sections.append(self.format_schedule(sched))
+        sections.append(f"{'═' * 62}\n")
+        return "\n".join(sections)
