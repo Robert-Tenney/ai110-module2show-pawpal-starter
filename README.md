@@ -46,18 +46,39 @@ pip install -r requirements.txt
 
 Paste a sample of your app's CLI or Streamlit output here so a reader can see what a generated plan looks like:
 
-```
-# e.g.:
-# Daily plan for Biscuit (Golden Retriever):
-#   08:00 — Morning walk (30 min) [priority: high]
-#   09:00 — Feeding (10 min) [priority: high]
-#   ...
-```
+══════════════════════════════════════════════════════════════
+  TODAY'S SCHEDULE  —  Sarah Chen
+══════════════════════════════════════════════════════════════
+┌────────────────────────────────────────────────────────────┐
+│   Biscuit  ·  2026-06-25                                   │
+│   Budget: 480 min  |  Used: 95 min  |  Free: 385 min       │
+├────────────────────────────────────────────────────────────┤
+│   [○] 07:30 AM  WALK         Morning walk @ Riverside Park  (30 min, high)  │
+│   [○] 08:00 AM  FEEDING      Breakfast — 1 cup dry kibble  (10 min, high)   │
+│   [○] 08:05 AM  MEDICATION   Allergy tablet | Give 10 mg Apoquel with food  │
+│   [○] 10:00 AM  ENRICHMENT   Puzzle feeder / training session @ Backyard    │
+│   [○] 06:00 PM  WALK         Evening neighbourhood walk @ Block loop        │
+└────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│   Luna  ·  2026-06-25                                      │
+│   Budget: 480 min  |  Used: 20 min  |  Free: 460 min       │
+├────────────────────────────────────────────────────────────┤
+│   [○] 07:45 AM  FEEDING      Breakfast — wet food (1 pouch)  (5 min, high)  │
+│   [○] 07:50 AM  MEDICATION   Thyroid medication | ½ pill Methimazole        │
+│   [○] 11:00 AM  GROOMING     Brush coat — 10-minute session  (10 min, low)  │
+└────────────────────────────────────────────────────────────┘
+══════════════════════════════════════════════════════════════
+
+  Total tasks across all pets : 8
+  Pending (not yet completed) : 8
+
+  After marking Biscuit's walk done:
+  Pending tasks : 7
 
 ## 🧪 Testing PawPal+
 
 ```bash
-# Run the full test suite:
+python main.py
 pytest
 
 # Run with coverage:
