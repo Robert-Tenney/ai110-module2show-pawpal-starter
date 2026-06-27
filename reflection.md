@@ -27,8 +27,7 @@ The conflict detector only catches tasks scheduled at the exact same time. It wo
 
 **a. How you used AI**
 
-I used AI to help trouble shoot code and to help make my summaries more clear and precise in the form of detecting spelling and grammar errors.
-
+I used AI to help trouble shoot code and to help make my summaries more clear and precise in the form of detecting spelling and grammar errors.In additon I used AI to reformat some responses to include emojis since I have no idea on how to do it.
 **b. Judgment and verification**
 
 I really couldn't find a moment where I disagreed with the output the AI(Claude) gave me since I used the same logic I tend to need being precise and detailed instruction on what is needed for the output.
@@ -44,8 +43,7 @@ I really couldn't find a moment where I disagreed with the output the AI(Claude)
 
 **b. Confidence**
 
-- How confident are you that your scheduler works correctly?
-- What edge cases would you test next if you had more time?
+I am fairly confident that my scheduler works but if I had more time to test it I would have been more rigerous in testing to see how it would respond to a user added multiple pets 
 
 ---
 
@@ -57,8 +55,8 @@ I really couldn't find a moment where I disagreed with the output the AI(Claude)
 
 **b. What you would improve**
 
-- If you had another iteration, what would you improve or redesign?
+If I had another iteration I am not really sure what I would add
 
 **c. Key takeaway**
 
-- What is one important thing you learned about designing systems or working with AI on this project?
+One important thing I learned is that with exteremtly detailed instructions on what you need AI programs rarely produces incorrect or invalid outputs

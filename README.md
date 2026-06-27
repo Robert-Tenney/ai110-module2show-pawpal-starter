@@ -114,21 +114,24 @@ tests/test_pawpal.py::TestScheduler::test_generate_plan_high_priority_first PASS
 
 > Fill in once you've implemented scheduling logic.
 
+
 | Feature | Method(s) | Notes |
 |---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+| Task sorting | `Scheduler.sort_by_time(tasks)` | Sorts by scheduled time using a lambda key; high-priority tasks appear first within the same time slot |
+| Filtering | `Scheduler.filter_tasks(tasks, pet_name, completed, owner)` | Skips tasks that don't match the selected pet or completion status; returns only what fits the filter |
+| Conflict handling | `Scheduler.detect_conflicts(schedule)` | Flags tasks booked at the exact same time slot; returns a warning message instead of crashing |
+| Recurring tasks | `Task.mark_complete()` + `Scheduler.complete_and_reschedule()` | Marks task done and auto-creates the next occurrence — daily adds 1 day, weekly adds 7 days |
 
 ## 📸 Demo Walkthrough
 
 Describe your app in numbered steps so a reader can follow along without watching a video:
-
-1. <!-- Describe this step -->
-2. <!-- Describe this step -->
-3. <!-- Describe this step -->
-4. <!-- Describe this step -->
-5. <!-- Add more steps as needed -->
+1. **Launch the app** — run `streamlit run app.py` and open `http://localhost:8501` in your browser.
+2. **Enter owner info** — fill in your name and email in the sidebar and click **Save Owner**.
+3. **Add a pet** — enter a pet name, species, breed, and age, then click **Add Pet**. Repeat for multiple pets.
+4. **Add tasks** — go to the **➕ Add Task** tab. Select a pet, choose a task type, set a time, location, and any notes (e.g. medication dosage), and click **Add Task**. If the time conflicts with an existing task, a `⚠️ warning` banner appears immediately.
+5. **View today's schedule** — go to the **📅 Today's Schedule** tab. Each pet has an expandable panel showing a sorted table of tasks, time budget metrics, and **Complete** buttons.
+6. **Mark a task complete** — click the ✓ button next to any task. For recurring tasks, a success message confirms the next occurrence has been auto-scheduled.
+7. **Check for conflicts** — go to the **⚠️ Conflict Check** tab to scan all pets at once. A clean schedule triggers a balloon animation.
+8. **Filter and sort** — go to the **🔍 Filter & Sort** tab. Choose a pet and status filter, pick a sort order, and the table updates instantly.
 
 **Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->

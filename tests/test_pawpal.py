@@ -1,745 +1,499 @@
-from __future__ import annotations
- 
-import uuid
-from dataclasses import dataclass, field
+"""
+tests/test_pawpal.py
+--------------------
+Automated test suite for PawPal+ logic layer.
+
+Covers
+------
+  - Task completion (happy path + edge cases)
+  - Task addition to a Pet
+  - Sorting correctness (sort_by_time)
+  - Recurrence logic (daily and weekly)
+  - Conflict detection (flagged and clean)
+  - Filtering (by pet, by status, combined)
+  - Owner task aggregation
+  - Scheduler plan generation (priority + time budget)
+  - Edge cases: no tasks, no detail, one-off tasks
+
+Run from the repo root with:
+    python -m pytest
+    python -m pytest -v
+    python -m pytest --cov
+"""
+
 from datetime import date, time, timedelta
-from typing import Optional
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# TaskDetail
-# ─────────────────────────────────────────────────────────────────────────────
- 
-@dataclass
-class TaskDetail:
-    """
-    The when/where specifics of a task on a given day.
-    Composed 1-to-1 with a Task.
- 
-    Attributes
-    ----------
-    task_id        : ID of the parent Task
-    scheduled_time : datetime.time object, e.g. time(8, 0) → 08:00
-    location       : where the task happens, e.g. "Riverside Park"
-    notes          : free-text notes, e.g. "Give 10 mg Apoquel with food"
-    detail_id      : auto-generated UUID
-    """
- 
-    task_id: str
-    scheduled_time: time
-    location: str = ""
-    notes: str = ""
-    detail_id: str = field(default_factory=lambda: str(uuid.uuid4()))
- 
-    def get_summary(self) -> str:
-        """Return a compact one-liner suitable for terminal or UI display."""
-        time_str = self.scheduled_time.strftime("%I:%M %p")
-        parts = [time_str]
-        if self.location:
-            parts.append(f"@ {self.location}")
-        if self.notes:
-            parts.append(f"({self.notes})")
-        return " ".join(parts)
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# Task
-# ─────────────────────────────────────────────────────────────────────────────
- 
-@dataclass
-class Task:
-    """
-    A single pet-care activity.
- 
-    Attributes
-    ----------
-    task_type      : short label — "walk" | "feeding" | "medication" | …
-    description    : free-text detail
-    duration_min   : how many minutes the activity takes
-    priority       : "high" | "medium" | "low"
-    is_recurring   : True = repeats (daily by default), False = one-off
-    frequency      : "daily" | "weekly" — controls next-occurrence offset
-    is_completed   : toggled when the owner marks the task done
-    due_date       : the calendar date this task instance is due
-    pet_id         : which pet this task belongs to
-    detail         : attached TaskDetail (when/where)
-    """
- 
-    task_type: str
-    description: str
-    duration_min: int
-    priority: str = "medium"          # "high" | "medium" | "low"
-    is_recurring: bool = True
-    frequency: str = "daily"          # "daily" | "weekly"
-    is_completed: bool = False
-    due_date: date = field(default_factory=date.today)
-    pet_id: str = ""
-    task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    detail: Optional[TaskDetail] = field(default=None, repr=False)
- 
-    # ── mutators ──────────────────────────────────────────────────────────
- 
-    def edit_task(
-        self,
-        task_type: str | None = None,
-        description: str | None = None,
-        duration_min: int | None = None,
-        priority: str | None = None,
-        is_recurring: bool | None = None,
-        frequency: str | None = None,
-    ) -> None:
-        """Update any subset of fields in place."""
-        if task_type    is not None: self.task_type    = task_type
-        if description  is not None: self.description  = description
-        if duration_min is not None: self.duration_min = duration_min
-        if priority     is not None: self.priority     = priority
-        if is_recurring is not None: self.is_recurring = is_recurring
-        if frequency    is not None: self.frequency    = frequency
- 
-    def mark_complete(self) -> Optional["Task"]:
-        """
-        Mark this task done and — for recurring tasks — automatically
-        create and return a new Task instance for the next occurrence.
- 
-        Recurrence offsets
-        ------------------
-        * frequency == "daily"  → due_date + 1 day   (timedelta(days=1))
-        * frequency == "weekly" → due_date + 7 days  (timedelta(weeks=1))
- 
-        Returns
-        -------
-        A new Task ready to be added to the pet's task list, or None if
-        this task is not recurring.
- 
-        Example
-        -------
-        >>> next_task = walk.mark_complete()
-        >>> if next_task:
-        ...     biscuit.add_task(next_task)
-        """
-        self.is_completed = True
- 
-        if not self.is_recurring:
-            return None
- 
-        # Calculate the next due date using timedelta
-        offset = timedelta(days=1) if self.frequency == "daily" else timedelta(weeks=1)
-        next_due = self.due_date + offset
- 
-        # Clone this task for the next occurrence — fresh ID, reset status
-        next_task = Task(
-            task_type=self.task_type,
-            description=self.description,
-            duration_min=self.duration_min,
-            priority=self.priority,
-            is_recurring=self.is_recurring,
-            frequency=self.frequency,
-            is_completed=False,
-            due_date=next_due,
-            pet_id=self.pet_id,
+
+import pytest
+
+from pawpal_system import (
+    Conflict,
+    DailySchedule,
+    Owner,
+    Pet,
+    Scheduler,
+    Task,
+    TaskDetail,
+)
+
+
+# ─────────────────────────────────────────────
+# Fixtures
+# ─────────────────────────────────────────────
+
+@pytest.fixture
+def sample_task() -> Task:
+    """A basic recurring daily walk task — no TaskDetail attached."""
+    return Task(
+        task_type="walk",
+        description="Morning walk",
+        duration_min=30,
+        priority="high",
+        is_recurring=True,
+        frequency="daily",
+    )
+
+
+@pytest.fixture
+def sample_pet() -> Pet:
+    """A dog with no tasks yet."""
+    return Pet(name="Biscuit", species="dog", breed="Golden Retriever")
+
+
+@pytest.fixture
+def sample_owner(sample_pet: Pet) -> Owner:
+    """An owner with one pet (Biscuit) already registered."""
+    owner = Owner(name="Sarah Chen", email="sarah@example.com")
+    owner.add_pet(sample_pet)
+    return owner
+
+
+@pytest.fixture
+def scheduler() -> Scheduler:
+    """A fresh Scheduler instance."""
+    return Scheduler()
+
+
+# ─────────────────────────────────────────────
+# Task Completion
+# ─────────────────────────────────────────────
+
+class TestTaskCompletion:
+    """Happy path and edge cases for mark_complete / mark_incomplete."""
+
+    def test_task_starts_incomplete(self, sample_task):
+        assert sample_task.is_completed is False
+
+    def test_mark_complete_sets_flag(self, sample_task):
+        sample_task.mark_complete()
+        assert sample_task.is_completed is True
+
+    def test_mark_incomplete_resets_flag(self, sample_task):
+        sample_task.mark_complete()
+        sample_task.mark_incomplete()
+        assert sample_task.is_completed is False
+
+    def test_mark_complete_twice_stays_true(self, sample_task):
+        """Idempotent — calling twice should not raise or flip the flag."""
+        sample_task.mark_complete()
+        sample_task.mark_complete()
+        assert sample_task.is_completed is True
+
+
+# ─────────────────────────────────────────────
+# Pet Task Management
+# ─────────────────────────────────────────────
+
+class TestPetTaskManagement:
+    """Adding, removing, and retrieving tasks on a Pet."""
+
+    def test_new_pet_has_no_tasks(self, sample_pet):
+        assert len(sample_pet.get_tasks()) == 0
+
+    def test_adding_one_task_increases_count(self, sample_pet, sample_task):
+        sample_pet.add_task(sample_task)
+        assert len(sample_pet.get_tasks()) == 1
+
+    def test_adding_three_tasks_counts_correctly(self, sample_pet):
+        for tt in ("walk", "feeding", "medication"):
+            sample_pet.add_task(Task(task_type=tt, description=tt, duration_min=10))
+        assert len(sample_pet.get_tasks()) == 3
+
+    def test_added_task_pet_id_matches(self, sample_pet, sample_task):
+        sample_pet.add_task(sample_task)
+        assert sample_task.pet_id == sample_pet.pet_id
+
+    def test_get_tasks_returns_copy(self, sample_pet, sample_task):
+        """Mutating the returned list must not affect the pet's internal state."""
+        sample_pet.add_task(sample_task)
+        sample_pet.get_tasks().clear()
+        assert len(sample_pet.get_tasks()) == 1
+
+    def test_remove_task_decreases_count(self, sample_pet, sample_task):
+        sample_pet.add_task(sample_task)
+        removed = sample_pet.remove_task(sample_task.task_id)
+        assert removed is True
+        assert len(sample_pet.get_tasks()) == 0
+
+    def test_remove_nonexistent_task_returns_false(self, sample_pet):
+        assert sample_pet.remove_task("fake-id-999") is False
+
+    def test_get_pending_excludes_completed(self, sample_pet):
+        t1 = Task(task_type="walk",    description="walk", duration_min=30)
+        t2 = Task(task_type="feeding", description="feed", duration_min=10)
+        sample_pet.add_task(t1)
+        sample_pet.add_task(t2)
+        t1.mark_complete()
+        pending = sample_pet.get_pending_tasks()
+        assert len(pending) == 1
+        assert pending[0].task_type == "feeding"
+
+
+# ─────────────────────────────────────────────
+# Sorting — sort_by_time
+# ─────────────────────────────────────────────
+
+class TestSortByTime:
+    """Verify sort_by_time returns tasks in chronological order."""
+
+    def test_tasks_sorted_chronologically(self, sample_pet, scheduler):
+        """Tasks added out of order must come back in time order."""
+        times = [time(18, 0), time(7, 30), time(12, 0), time(8, 0)]
+        for i, t in enumerate(times):
+            task = Task(task_type="task", description=f"task {i}", duration_min=10)
+            task.set_detail(scheduled_time=t)
+            sample_pet.add_task(task)
+
+        sorted_tasks = scheduler.sort_by_time(sample_pet.get_tasks())
+        result_times = [t.detail.scheduled_time for t in sorted_tasks]
+        assert result_times == sorted(times)
+
+    def test_task_without_detail_sorts_last(self, sample_pet, scheduler):
+        """A task with no detail (no scheduled time) must appear at the end."""
+        early = Task(task_type="walk", description="early", duration_min=10)
+        early.set_detail(scheduled_time=time(6, 0))
+        no_time = Task(task_type="misc", description="no time", duration_min=5)
+
+        sample_pet.add_task(no_time)    # added first
+        sample_pet.add_task(early)
+
+        sorted_tasks = scheduler.sort_by_time(sample_pet.get_tasks())
+        assert sorted_tasks[0].description == "early"
+        assert sorted_tasks[-1].description == "no time"
+
+    def test_sort_does_not_mutate_original(self, sample_pet, scheduler):
+        """sort_by_time must return a new list, not sort in place."""
+        t1 = Task(task_type="walk",    description="late",  duration_min=10)
+        t2 = Task(task_type="feeding", description="early", duration_min=10)
+        t1.set_detail(scheduled_time=time(18, 0))
+        t2.set_detail(scheduled_time=time(7,  0))
+        sample_pet.add_task(t1)
+        sample_pet.add_task(t2)
+
+        original_order = [t.description for t in sample_pet.get_tasks()]
+        scheduler.sort_by_time(sample_pet.get_tasks())
+        assert [t.description for t in sample_pet.get_tasks()] == original_order
+
+    def test_empty_list_sorts_cleanly(self, scheduler):
+        """sort_by_time on an empty list must return an empty list, not raise."""
+        assert scheduler.sort_by_time([]) == []
+
+    def test_single_task_sorts_cleanly(self, scheduler, sample_task):
+        """sort_by_time on a one-element list must return that element."""
+        sample_task.set_detail(scheduled_time=time(9, 0))
+        result = scheduler.sort_by_time([sample_task])
+        assert len(result) == 1
+
+
+# ─────────────────────────────────────────────
+# Recurrence Logic
+# ─────────────────────────────────────────────
+
+class TestRecurrenceLogic:
+    """Confirm recurring tasks auto-create the correct next occurrence."""
+
+    def test_daily_task_creates_next_day(self, sample_pet, scheduler):
+        """Completing a daily task must produce a new task due tomorrow."""
+        today = date.today()
+        task = Task(
+            task_type="walk", description="Morning walk",
+            duration_min=30, is_recurring=True, frequency="daily",
+            due_date=today,
         )
- 
-        # Copy the scheduled time/location so the next occurrence is identical
-        if self.detail:
-            next_task.set_detail(
-                scheduled_time=self.detail.scheduled_time,
-                location=self.detail.location,
-                notes=self.detail.notes,
-            )
- 
-        return next_task
- 
-    def mark_incomplete(self) -> None:
-        """Reset completion status."""
-        self.is_completed = False
- 
-    def set_detail(
-        self,
-        scheduled_time: time,
-        location: str = "",
-        notes: str = "",
-    ) -> TaskDetail:
-        """Create and attach a TaskDetail to this task; return it."""
-        self.detail = TaskDetail(
-            task_id=self.task_id,
-            scheduled_time=scheduled_time,
-            location=location,
-            notes=notes,
+        task.set_detail(scheduled_time=time(7, 30))
+        sample_pet.add_task(task)
+
+        next_task = scheduler.complete_and_reschedule(task, sample_pet)
+
+        assert next_task is not None
+        assert next_task.due_date == today + timedelta(days=1)
+
+    def test_weekly_task_creates_next_week(self, sample_pet, scheduler):
+        """Completing a weekly task must produce a new task due in 7 days."""
+        today = date.today()
+        task = Task(
+            task_type="grooming", description="Bath time",
+            duration_min=20, is_recurring=True, frequency="weekly",
+            due_date=today,
         )
-        return self.detail
- 
-    # ── display ───────────────────────────────────────────────────────────
- 
-    def display(self) -> str:
-        """Compact one-liner for terminal and Streamlit output."""
-        status   = "✓" if self.is_completed else "○"
-        time_str = (
-            self.detail.scheduled_time.strftime("%I:%M %p")
-            if self.detail else "--:--   "
+        task.set_detail(scheduled_time=time(14, 0))
+        sample_pet.add_task(task)
+
+        next_task = scheduler.complete_and_reschedule(task, sample_pet)
+
+        assert next_task is not None
+        assert next_task.due_date == today + timedelta(weeks=1)
+
+    def test_recurring_task_inherits_same_time(self, sample_pet, scheduler):
+        """The cloned next-occurrence task must keep the same scheduled time."""
+        task = Task(
+            task_type="medication", description="Allergy tablet",
+            duration_min=5, is_recurring=True, frequency="daily",
         )
-        location = f" @ {self.detail.location}" if self.detail and self.detail.location else ""
-        notes    = f" | {self.detail.notes}"    if self.detail and self.detail.notes    else ""
-        recur    = " ↺" if self.is_recurring else ""
-        return (
-            f"  [{status}] {time_str}  {self.task_type.upper():<12} "
-            f"{self.description}{location}{notes}  "
-            f"({self.duration_min} min, {self.priority}{recur})"
+        task.set_detail(scheduled_time=time(8, 5), notes="10 mg Apoquel")
+        sample_pet.add_task(task)
+
+        next_task = scheduler.complete_and_reschedule(task, sample_pet)
+
+        assert next_task.detail is not None
+        assert next_task.detail.scheduled_time == time(8, 5)
+
+    def test_non_recurring_task_returns_none(self, sample_pet, scheduler):
+        """Completing a one-off task must return None — no clone created."""
+        task = Task(
+            task_type="vet visit", description="Annual checkup",
+            duration_min=60, is_recurring=False,
         )
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# Pet
-# ─────────────────────────────────────────────────────────────────────────────
- 
-@dataclass
-class Pet:
-    """
-    A pet being cared for.
- 
-    Stores pet details and owns a list of Task objects.  The Scheduler
-    accesses tasks exclusively through the public methods below.
-    """
- 
-    name: str
-    species: str        # "dog" | "cat" | "rabbit" | …
-    breed: str = ""
-    age_years: float = 0.0
-    owner_id: str = ""
-    pet_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    _tasks: list[Task] = field(default_factory=list, repr=False, compare=False)
- 
-    # ── task management ───────────────────────────────────────────────────
- 
-    def add_task(self, task: Task) -> None:
-        """Attach a task to this pet and set its pet_id."""
-        task.pet_id = self.pet_id
-        self._tasks.append(task)
- 
-    def remove_task(self, task_id: str) -> bool:
-        """Remove a task by ID; return True if the task was found."""
-        before = len(self._tasks)
-        self._tasks = [t for t in self._tasks if t.task_id != task_id]
-        return len(self._tasks) < before
- 
-    def get_tasks(self) -> list[Task]:
-        """Return a shallow copy of all tasks for this pet."""
-        return list(self._tasks)
- 
-    def get_pending_tasks(self) -> list[Task]:
-        """Return only tasks not yet marked complete."""
-        return [t for t in self._tasks if not t.is_completed]
- 
-    def get_tasks_by_priority(self, priority: str) -> list[Task]:
-        """Return tasks matching a given priority level."""
-        return [t for t in self._tasks if t.priority == priority]
- 
-    # ── display ───────────────────────────────────────────────────────────
- 
-    def summary(self) -> str:
-        """Short description string: 'Biscuit (Golden Retriever) — dog, 3 yrs'."""
-        breed_str = f" ({self.breed})" if self.breed else ""
-        age_str   = f", {self.age_years} yrs" if self.age_years else ""
-        return f"{self.name}{breed_str} — {self.species}{age_str}"
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# Owner
-# ─────────────────────────────────────────────────────────────────────────────
- 
-@dataclass
-class Owner:
-    """
-    A pet owner who manages one or more pets.
- 
-    The Scheduler retrieves all tasks via owner.get_all_tasks(), which
-    iterates every pet's task list and returns a single flat list.
-    """
- 
-    name: str
-    email: str
-    phone: str = ""
-    owner_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    _pets: list[Pet] = field(default_factory=list, repr=False, compare=False)
- 
-    # ── pet management ────────────────────────────────────────────────────
- 
-    def add_pet(self, pet: Pet) -> Pet:
-        """Register a pet under this owner; set its owner_id and return it."""
-        pet.owner_id = self.owner_id
-        self._pets.append(pet)
-        return pet
- 
-    def remove_pet(self, pet_id: str) -> bool:
-        """Remove a pet by ID; return True if found."""
-        before = len(self._pets)
-        self._pets = [p for p in self._pets if p.pet_id != pet_id]
-        return len(self._pets) < before
- 
-    def get_pets(self) -> list[Pet]:
-        """Return all pets belonging to this owner."""
-        return list(self._pets)
- 
-    def find_pet_by_name(self, name: str) -> Pet | None:
-        """Case-insensitive name lookup; returns the first match or None."""
-        return next(
-            (p for p in self._pets if p.name.lower() == name.lower()), None
+        sample_pet.add_task(task)
+
+        next_task = scheduler.complete_and_reschedule(task, sample_pet)
+        assert next_task is None
+
+    def test_recurring_task_marked_complete_after_reschedule(self, sample_pet, scheduler):
+        """After complete_and_reschedule the original task must be done."""
+        task = Task(
+            task_type="walk", description="walk",
+            duration_min=30, is_recurring=True, frequency="daily",
         )
- 
-    # ── task aggregation ──────────────────────────────────────────────────
- 
-    def get_all_tasks(self) -> list[Task]:
-        """
-        Return every task across ALL of this owner's pets.
-        Primary method the Scheduler calls to build a daily plan.
-        """
-        tasks: list[Task] = []
-        for pet in self._pets:
-            tasks.extend(pet.get_tasks())
-        return tasks
- 
-    def get_all_pending_tasks(self) -> list[Task]:
-        """All incomplete tasks across every pet."""
-        return [t for t in self.get_all_tasks() if not t.is_completed]
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# DailySchedule
-# ─────────────────────────────────────────────────────────────────────────────
- 
-@dataclass
-class DailySchedule:
-    """
-    Ordered daily plan for one pet on one calendar date.
- 
-    generate_plan() sorts by priority then scheduled time, and drops
-    tasks that would exceed the owner's available time budget.
-    """
- 
-    pet_id: str
-    pet_name: str
-    date: date
-    time_budget_min: int = 480      # 8 hours of care time available by default
-    tasks: list[Task] = field(default_factory=list)
-    schedule_id: str = field(default_factory=lambda: str(uuid.uuid4()))
- 
-    def add_task(self, task: Task) -> None:
-        """Append a task to this schedule."""
-        self.tasks.append(task)
- 
-    def total_time_used(self) -> int:
-        """Sum of duration_min for every task currently in the schedule."""
-        return sum(t.duration_min for t in self.tasks)
- 
-    def time_remaining(self) -> int:
-        """Minutes left in the time budget after accounting for current tasks."""
-        return self.time_budget_min - self.total_time_used()
- 
-    def generate_plan(self) -> list[Task]:
-        """
-        Return an ordered list of tasks that fit within the time budget.
- 
-        Sorting strategy
-        ----------------
-        Primary key   : priority rank  (high=0, medium=1, low=2)
-        Secondary key : scheduled_time (tasks without a detail sort last)
- 
-        Filtering strategy
-        ------------------
-        Walk the sorted list and include a task only when its duration
-        fits in the remaining budget.  Once the budget is exhausted,
-        remaining tasks are silently skipped (no crash).
-        """
-        PRIORITY = {"high": 0, "medium": 1, "low": 2}
- 
-        sorted_tasks = sorted(
-            self.tasks,
-            key=lambda t: (
-                PRIORITY.get(t.priority, 99),
-                t.detail.scheduled_time if t.detail else time(23, 59),
-            ),
+        sample_pet.add_task(task)
+        scheduler.complete_and_reschedule(task, sample_pet)
+        assert task.is_completed is True
+
+    def test_next_occurrence_added_to_pet(self, sample_pet, scheduler):
+        """complete_and_reschedule must register the new task on the pet."""
+        task = Task(
+            task_type="feeding", description="Breakfast",
+            duration_min=10, is_recurring=True, frequency="daily",
         )
- 
-        plan: list[Task] = []
-        remaining = self.time_budget_min
-        for task in sorted_tasks:
-            if task.duration_min <= remaining:
-                plan.append(task)
-                remaining -= task.duration_min
-        return plan
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# Conflict namedtuple-style dataclass
-# ─────────────────────────────────────────────────────────────────────────────
- 
-@dataclass
-class Conflict:
-    """
-    Represents a scheduling conflict between two tasks.
- 
-    Produced by Scheduler.detect_conflicts() and formatted by
-    Scheduler.format_conflicts().
-    """
- 
-    pet_name: str
-    conflict_time: str          # "HH:MM AM/PM"
-    task_a: str                 # description of first task
-    task_b: str                 # description of second task
- 
-    def message(self) -> str:
-        """Human-readable warning suitable for terminal or Streamlit st.warning()."""
-        return (
-            f"⚠  CONFLICT  [{self.pet_name}]  {self.conflict_time}  — "
-            f'"{self.task_a}" and "{self.task_b}" are both scheduled at the same time.'
-        )
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# Scheduler  ← the "brain"
-# ─────────────────────────────────────────────────────────────────────────────
- 
-class Scheduler:
-    """
-    Orchestration engine.  The Streamlit UI talks primarily to this class.
- 
-    Phase 4 public API (new methods)
-    ---------------------------------
-    sort_by_time(tasks)              Sort a task list by scheduled_time.
-    filter_tasks(tasks, ...)         Filter by pet name and/or completion status.
-    detect_conflicts(schedule)       Return a list of Conflict objects.
-    format_conflicts(conflicts)      Pretty-print conflict warnings.
-    complete_and_reschedule(task, pet)  Mark done and auto-add next occurrence.
-    """
- 
-    def __init__(self) -> None:
-        self._owners: dict[str, Owner] = {}
-        self._schedules: dict[str, DailySchedule] = {}     # schedule_id → schedule
- 
-    # ── owner / pet registration ──────────────────────────────────────────
- 
-    def register_owner(self, owner: Owner) -> Owner:
-        """Register an owner with the scheduler and return it."""
-        self._owners[owner.owner_id] = owner
-        return owner
- 
-    def get_owner(self, owner_id: str) -> Owner | None:
-        """Look up a registered owner by ID."""
-        return self._owners.get(owner_id)
- 
-    def add_pet_to_owner(self, pet: Pet, owner: Owner) -> Pet:
-        """Add *pet* to *owner* and return the pet."""
-        return owner.add_pet(pet)
- 
-    # ── task retrieval ────────────────────────────────────────────────────
- 
-    def get_all_tasks(self, owner: Owner) -> list[Task]:
-        """
-        Retrieve every task for every pet owned by *owner*.
- 
-        Flow
-        ----
-        scheduler.get_all_tasks(owner)
-            → owner.get_all_tasks()
-                → pet.get_tasks()  (for every pet)
-                    → flat list of Task objects
-        """
-        return owner.get_all_tasks()
- 
-    def get_tasks_for_pet(self, owner: Owner, pet_name: str) -> list[Task]:
-        """Return all tasks for a single pet identified by name."""
-        pet = owner.find_pet_by_name(pet_name)
-        return pet.get_tasks() if pet else []
- 
-    def get_pending_tasks(self, owner: Owner) -> list[Task]:
-        """Return all incomplete tasks across every pet owned by *owner*."""
-        return owner.get_all_pending_tasks()
- 
-    # ── Phase 4 · SORTING ─────────────────────────────────────────────────
- 
-    def sort_by_time(self, tasks: list[Task]) -> list[Task]:
-        """
-        Return *tasks* sorted in ascending order by scheduled_time.
- 
-        Uses a lambda as the sort key so Python's built-in Timsort
-        (O(n log n)) handles the heavy lifting.  Tasks without a
-        TaskDetail (no time set) are sorted to the end of the list.
- 
-        Parameters
-        ----------
-        tasks : list[Task]
-            Any flat list of Task objects — e.g. from get_all_tasks() or
-            filter_tasks().
- 
-        Returns
-        -------
-        list[Task]
-            A new sorted list; the original list is not mutated.
- 
-        Example
-        -------
-        >>> sorted_tasks = scheduler.sort_by_time(biscuit.get_tasks())
-        """
-        return sorted(
-            tasks,
-            key=lambda t: t.detail.scheduled_time if t.detail else time(23, 59),
-        )
- 
-    # ── Phase 4 · FILTERING ───────────────────────────────────────────────
- 
-    def filter_tasks(
-        self,
-        tasks: list[Task],
-        *,
-        pet_name: str | None = None,
-        completed: bool | None = None,
-        owner: Owner | None = None,
-    ) -> list[Task]:
-        """
-        Filter a list of tasks by pet name and/or completion status.
- 
-        Parameters
-        ----------
-        tasks     : source list to filter (not mutated)
-        pet_name  : keep only tasks whose pet has this name (case-insensitive).
-                    Requires *owner* to be supplied for the name→ID lookup.
-        completed : True  → keep only completed tasks
-                    False → keep only pending tasks
-                    None  → no status filter applied
-        owner     : the Owner used for pet name → pet_id resolution
- 
-        Returns
-        -------
-        A new filtered list.
- 
-        Examples
-        --------
-        >>> # Only incomplete tasks for Biscuit
-        >>> scheduler.filter_tasks(all_tasks, pet_name="Biscuit",
-        ...                        completed=False, owner=sarah)
- 
-        >>> # All completed tasks regardless of pet
-        >>> scheduler.filter_tasks(all_tasks, completed=True)
-        """
-        result = list(tasks)
- 
-        # Filter by pet name (resolve name → pet_id via owner)
-        if pet_name is not None and owner is not None:
-            pet = owner.find_pet_by_name(pet_name)
-            if pet:
-                result = [t for t in result if t.pet_id == pet.pet_id]
-            else:
-                result = []   # named pet not found → empty
- 
-        # Filter by completion status
-        if completed is not None:
-            result = [t for t in result if t.is_completed == completed]
- 
-        return result
- 
-    # ── Phase 4 · RECURRING TASKS ─────────────────────────────────────────
- 
-    def complete_and_reschedule(self, task: Task, pet: Pet) -> Optional[Task]:
-        """
-        Mark *task* complete and — if it is recurring — automatically
-        create the next occurrence and register it on *pet*.
- 
-        Uses Task.mark_complete(), which uses timedelta internally:
-          daily  → due_date + timedelta(days=1)
-          weekly → due_date + timedelta(weeks=1)
- 
-        Parameters
-        ----------
-        task : the Task to mark done
-        pet  : the Pet whose task list receives the next occurrence
- 
-        Returns
-        -------
-        The newly created next-occurrence Task, or None for one-off tasks.
- 
-        Example
-        -------
-        >>> next_walk = scheduler.complete_and_reschedule(walk, biscuit)
-        >>> print(f"Next walk due: {next_walk.due_date}")
-        """
-        next_task = task.mark_complete()     # sets is_completed = True
-        if next_task:
-            pet.add_task(next_task)
-        return next_task
- 
-    # ── Phase 4 · CONFLICT DETECTION ──────────────────────────────────────
- 
-    def detect_conflicts(self, schedule: DailySchedule) -> list[Conflict]:
-        """
-        Detect tasks for the same pet that share an exact scheduled_time.
- 
-        Strategy
-        --------
-        Build a dict keyed by scheduled_time; if a time slot already has
-        an entry, record a Conflict.  This is O(n) and never raises —
-        it returns warnings rather than crashing.
- 
-        Tradeoff: only *exact* time matches are caught.  Two tasks at
-        08:00 and 08:10 that together run for 40 minutes will NOT be
-        flagged even if they physically overlap.  (Documented in
-        reflection.md §2b.)
- 
-        Parameters
-        ----------
-        schedule : a DailySchedule whose task list is inspected
- 
-        Returns
-        -------
-        list[Conflict] — empty if no conflicts found.
- 
-        Example
-        -------
-        >>> conflicts = scheduler.detect_conflicts(biscuit_schedule)
-        >>> for c in conflicts:
-        ...     print(c.message())
-        """
-        seen: dict[time, Task] = {}
-        conflicts: list[Conflict] = []
- 
-        for task in schedule.tasks:
-            if task.detail is None:
-                continue                        # no scheduled time — skip
- 
-            t = task.detail.scheduled_time
-            if t in seen:
-                conflicts.append(
-                    Conflict(
-                        pet_name=schedule.pet_name,
-                        conflict_time=t.strftime("%I:%M %p"),
-                        task_a=seen[t].description,
-                        task_b=task.description,
-                    )
-                )
-            else:
-                seen[t] = task
- 
-        return conflicts
- 
-    def format_conflicts(self, conflicts: list[Conflict]) -> str:
-        """
-        Return a formatted block of conflict warnings, or a clean message
-        if no conflicts were found.
- 
-        Parameters
-        ----------
-        conflicts : output of detect_conflicts()
-        """
-        if not conflicts:
-            return "  ✓  No scheduling conflicts detected."
-        lines = [f"  {c.message()}" for c in conflicts]
-        return "\n".join(lines)
- 
-    # ── schedule building ─────────────────────────────────────────────────
- 
-    def build_schedule_for_pet(
-        self,
-        pet: Pet,
-        on_date: date | None = None,
-        time_budget_min: int = 480,
-    ) -> DailySchedule:
-        """
-        Create (or retrieve an existing) DailySchedule for *pet* on *on_date*.
- 
-        Parameters
-        ----------
-        pet            : the Pet to schedule
-        on_date        : calendar date; defaults to today
-        time_budget_min: available care minutes; default 480 (8 hours)
- 
-        Returns
-        -------
-        DailySchedule with all of *pet*'s current tasks loaded.
-        """
-        on_date = on_date or date.today()
- 
-        for sched in self._schedules.values():
-            if sched.pet_id == pet.pet_id and sched.date == on_date:
-                return sched
- 
-        sched = DailySchedule(
+        sample_pet.add_task(task)
+        count_before = len(sample_pet.get_tasks())
+
+        scheduler.complete_and_reschedule(task, sample_pet)
+
+        assert len(sample_pet.get_tasks()) == count_before + 1
+
+
+# ─────────────────────────────────────────────
+# Conflict Detection
+# ─────────────────────────────────────────────
+
+class TestConflictDetection:
+    """Verify detect_conflicts catches duplicate times and ignores clean schedules."""
+
+    def _make_schedule(self, pet: Pet) -> DailySchedule:
+        return DailySchedule(
             pet_id=pet.pet_id,
             pet_name=pet.name,
-            date=on_date,
-            time_budget_min=time_budget_min,
+            date=date.today(),
         )
-        for task in pet.get_tasks():
+
+    def test_no_conflicts_on_clean_schedule(self, sample_pet, scheduler):
+        """Distinct times must produce an empty conflict list."""
+        sched = self._make_schedule(sample_pet)
+        for i, t in enumerate([time(7, 0), time(8, 0), time(9, 0)]):
+            task = Task(task_type="task", description=f"task {i}", duration_min=10)
+            task.set_detail(scheduled_time=t)
             sched.add_task(task)
- 
-        self._schedules[sched.schedule_id] = sched
-        return sched
- 
-    def build_all_schedules(
-        self,
-        owner: Owner,
-        on_date: date | None = None,
-    ) -> list[DailySchedule]:
-        """Build one DailySchedule per pet for the given owner."""
-        on_date = on_date or date.today()
-        return [
-            self.build_schedule_for_pet(pet, on_date)
-            for pet in owner.get_pets()
-        ]
- 
-    # ── formatting ────────────────────────────────────────────────────────
- 
-    def format_schedule(self, schedule: DailySchedule) -> str:
-        """
-        Pretty-print a single pet's daily schedule for terminal output.
- 
-        Layout
-        ------
-        ┌────────────────────────────────────────────────────────────┐
-        │   Biscuit  ·  2025-06-10                                   │
-        │   Budget: 480 min  |  Used: 75 min  |  Free: 405 min       │
-        ├────────────────────────────────────────────────────────────┤
-        │   [○] 07:30 AM  WALK         Morning walk ↺                │
-        └────────────────────────────────────────────────────────────┘
-        """
-        plan  = schedule.generate_plan()
-        width = 60
- 
-        header = (
-            f"  {schedule.pet_name}  ·  {schedule.date}\n"
-            f"  Budget: {schedule.time_budget_min} min  |  "
-            f"Used: {schedule.total_time_used()} min  |  "
-            f"Free: {schedule.time_remaining()} min"
+
+        assert scheduler.detect_conflicts(sched) == []
+
+    def test_duplicate_time_raises_conflict(self, sample_pet, scheduler):
+        """Two tasks at the exact same time must produce one Conflict."""
+        sched = self._make_schedule(sample_pet)
+
+        t1 = Task(task_type="feeding",  description="Breakfast", duration_min=10)
+        t2 = Task(task_type="vet_call", description="Call vet",  duration_min=10)
+        t1.set_detail(scheduled_time=time(8, 0))
+        t2.set_detail(scheduled_time=time(8, 0))    # ← same time
+
+        sched.add_task(t1)
+        sched.add_task(t2)
+
+        conflicts = scheduler.detect_conflicts(sched)
+        assert len(conflicts) == 1
+        assert isinstance(conflicts[0], Conflict)
+
+    def test_conflict_message_contains_pet_name(self, sample_pet, scheduler):
+        """The conflict warning must mention the pet's name."""
+        sched = self._make_schedule(sample_pet)
+
+        for desc in ("Task A", "Task B"):
+            task = Task(task_type="misc", description=desc, duration_min=10)
+            task.set_detail(scheduled_time=time(10, 0))
+            sched.add_task(task)
+
+        conflicts = scheduler.detect_conflicts(sched)
+        assert sample_pet.name in conflicts[0].message()
+
+    def test_tasks_without_detail_skipped(self, sample_pet, scheduler):
+        """Tasks with no scheduled time must not trigger a false conflict."""
+        sched = self._make_schedule(sample_pet)
+
+        for desc in ("No-time A", "No-time B"):
+            task = Task(task_type="misc", description=desc, duration_min=10)
+            sched.add_task(task)   # no set_detail
+
+        assert scheduler.detect_conflicts(sched) == []
+
+    def test_empty_schedule_has_no_conflicts(self, sample_pet, scheduler):
+        """An empty schedule must return an empty conflict list."""
+        sched = self._make_schedule(sample_pet)
+        assert scheduler.detect_conflicts(sched) == []
+
+
+# ─────────────────────────────────────────────
+# Filtering — filter_tasks
+# ─────────────────────────────────────────────
+
+class TestFilterTasks:
+    """Verify filter_tasks narrows correctly by pet name and status."""
+
+    def test_filter_by_pet_name(self, sample_owner, sample_pet, scheduler):
+        luna = Pet(name="Luna", species="cat")
+        sample_owner.add_pet(luna)
+
+        sample_pet.add_task(Task(task_type="walk",    description="walk", duration_min=30))
+        luna.add_task(Task(task_type="feeding", description="feed", duration_min=10))
+
+        all_tasks    = scheduler.get_all_tasks(sample_owner)
+        biscuit_only = scheduler.filter_tasks(all_tasks, pet_name="Biscuit", owner=sample_owner)
+
+        assert len(biscuit_only) == 1
+        assert biscuit_only[0].task_type == "walk"
+
+    def test_filter_pending_only(self, sample_pet, sample_owner, scheduler):
+        t1 = Task(task_type="walk",    description="walk", duration_min=30)
+        t2 = Task(task_type="feeding", description="feed", duration_min=10)
+        sample_pet.add_task(t1)
+        sample_pet.add_task(t2)
+        t1.mark_complete()
+
+        pending = scheduler.filter_tasks(
+            scheduler.get_all_tasks(sample_owner), completed=False
         )
- 
-        top    = "┌" + "─" * width + "┐"
-        mid    = "├" + "─" * width + "┤"
-        bottom = "└" + "─" * width + "┘"
- 
-        def row(text: str) -> str:
-            return "│ " + text.ljust(width - 1) + "│"
- 
-        lines = [top]
-        for line in header.splitlines():
-            lines.append(row(line))
- 
-        lines.append(mid)
-        if plan:
-            for task in plan:
-                lines.append(row(task.display()))
-        else:
-            lines.append(row("  (no tasks scheduled)"))
- 
-        lines.append(bottom)
-        return "\n".join(lines)
- 
-    def format_all_schedules(
-        self, owner: Owner, on_date: date | None = None
-    ) -> str:
-        """Format today's schedule for every pet owned by *owner*."""
-        on_date   = on_date or date.today()
-        schedules = self.build_all_schedules(owner, on_date)
-        if not schedules:
-            return "No pets registered."
-        banner = f"\n{'═' * 62}\n  TODAY'S SCHEDULE  —  {owner.name}\n{'═' * 62}"
-        parts  = [banner] + [self.format_schedule(s) for s in schedules]
-        parts.append(f"{'═' * 62}\n")
-        return "\n".join(parts)
- 
+        assert len(pending) == 1
+        assert pending[0].task_type == "feeding"
+
+    def test_filter_completed_only(self, sample_pet, sample_owner, scheduler):
+        t1 = Task(task_type="walk",    description="walk", duration_min=30)
+        t2 = Task(task_type="feeding", description="feed", duration_min=10)
+        sample_pet.add_task(t1)
+        sample_pet.add_task(t2)
+        t1.mark_complete()
+
+        done = scheduler.filter_tasks(
+            scheduler.get_all_tasks(sample_owner), completed=True
+        )
+        assert len(done) == 1
+        assert done[0].task_type == "walk"
+
+    def test_filter_unknown_pet_returns_empty(self, sample_owner, scheduler):
+        all_tasks = scheduler.get_all_tasks(sample_owner)
+        result = scheduler.filter_tasks(
+            all_tasks, pet_name="NoSuchPet", owner=sample_owner
+        )
+        assert result == []
+
+    def test_filter_no_criteria_returns_all(self, sample_pet, sample_owner, scheduler):
+        """Calling filter_tasks with no criteria must return every task unchanged."""
+        for tt in ("walk", "feeding", "medication"):
+            sample_pet.add_task(Task(task_type=tt, description=tt, duration_min=10))
+
+        all_tasks = scheduler.get_all_tasks(sample_owner)
+        assert scheduler.filter_tasks(all_tasks) == all_tasks
+
+
+# ─────────────────────────────────────────────
+# Owner
+# ─────────────────────────────────────────────
+
+class TestOwner:
+
+    def test_owner_registers_pet(self, sample_owner):
+        assert len(sample_owner.get_pets()) == 1
+
+    def test_get_all_tasks_aggregates_across_pets(self, sample_owner, sample_pet):
+        luna = Pet(name="Luna", species="cat")
+        sample_owner.add_pet(luna)
+
+        for label in ("walk", "feeding"):
+            sample_pet.add_task(Task(task_type=label, description=label, duration_min=10))
+        luna.add_task(Task(task_type="grooming", description="brush", duration_min=10))
+
+        assert len(sample_owner.get_all_tasks()) == 3
+
+    def test_find_pet_by_name_case_insensitive(self, sample_owner):
+        assert sample_owner.find_pet_by_name("biscuit") is not None
+        assert sample_owner.find_pet_by_name("BISCUIT") is not None
+
+    def test_find_pet_by_name_missing_returns_none(self, sample_owner):
+        assert sample_owner.find_pet_by_name("Ghost") is None
+
+
+# ─────────────────────────────────────────────
+# Scheduler — plan generation
+# ─────────────────────────────────────────────
+
+class TestSchedulerPlan:
+
+    def test_plan_respects_time_budget(self, sample_pet, scheduler):
+        """Tasks that exceed the budget must be dropped from the plan."""
+        for i in range(5):
+            t = Task(task_type="walk", description=f"walk {i}",
+                     duration_min=60, priority="medium")
+            t.set_detail(scheduled_time=time(i + 6, 0))
+            sample_pet.add_task(t)
+
+        sched = scheduler.build_schedule_for_pet(
+            sample_pet, on_date=date.today(), time_budget_min=120
+        )
+        assert sum(t.duration_min for t in sched.generate_plan()) <= 120
+
+    def test_plan_high_priority_before_low(self, sample_pet, scheduler):
+        low  = Task(task_type="grooming",   description="groom",
+                    duration_min=10, priority="low")
+        high = Task(task_type="medication", description="meds",
+                    duration_min=5,  priority="high")
+        low.set_detail(scheduled_time=time(7, 0))    # earlier time, lower priority
+        high.set_detail(scheduled_time=time(9, 0))
+        sample_pet.add_task(low)
+        sample_pet.add_task(high)
+
+        plan = scheduler.build_schedule_for_pet(
+            sample_pet, on_date=date.today()
+        ).generate_plan()
+
+        assert plan[0].priority == "high"
+        assert plan[1].priority == "low"
+
+    def test_pet_with_no_tasks_produces_empty_plan(self, sample_pet, scheduler):
+        """Edge case: a pet with no tasks must produce an empty plan, not crash."""
+        sched = scheduler.build_schedule_for_pet(sample_pet, on_date=date.today())
+        assert sched.generate_plan() == []
+
+    def test_schedule_reused_for_same_pet_and_date(self, sample_pet, scheduler):
+        """build_schedule_for_pet twice with the same (pet, date) returns
+        the same schedule object — no duplicates registered."""
+        today = date.today()
+        s1 = scheduler.build_schedule_for_pet(sample_pet, on_date=today)
+        s2 = scheduler.build_schedule_for_pet(sample_pet, on_date=today)
+        assert s1.schedule_id == s2.schedule_id
