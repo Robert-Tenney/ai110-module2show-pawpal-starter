@@ -87,9 +87,28 @@ pytest --cov
 
 Sample test output:
 
-```
-# Paste your pytest output here
-```
+platform win32 -- Python 3.14.5, pytest-9.0.3, pluggy-1.6.0 -- C:\Users\u\AppData\Local\Python\pythoncore-3.14-64\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\u\ai110-module2show-pawpal-starter
+plugins: anyio-4.13.0
+collected 15 items
+
+tests/test_pawpal.py::TestTaskCompletion::test_task_starts_incomplete PASSED                                     [  6%]
+tests/test_pawpal.py::TestTaskCompletion::test_mark_complete_sets_flag PASSED                                    [ 13%]
+tests/test_pawpal.py::TestTaskCompletion::test_mark_incomplete_resets_flag PASSED                                [ 20%]
+tests/test_pawpal.py::TestTaskCompletion::test_mark_complete_idempotent PASSED                                   [ 26%]
+tests/test_pawpal.py::TestPetTaskAddition::test_pet_starts_with_no_tasks PASSED                                  [ 33%]
+tests/test_pawpal.py::TestPetTaskAddition::test_adding_one_task_increases_count PASSED                           [ 40%]
+tests/test_pawpal.py::TestPetTaskAddition::test_adding_multiple_tasks_increases_count PASSED                     [ 46%]
+tests/test_pawpal.py::TestPetTaskAddition::test_added_task_links_to_pet PASSED                                   [ 53%]
+tests/test_pawpal.py::TestPetTaskAddition::test_get_tasks_returns_copy PASSED                                    [ 60%]
+tests/test_pawpal.py::TestOwner::test_owner_add_pet PASSED                                                       [ 66%]
+tests/test_pawpal.py::TestOwner::test_get_all_tasks_aggregates_across_pets PASSED                                [ 73%]
+tests/test_pawpal.py::TestOwner::test_get_all_pending_excludes_completed PASSED                                  [ 80%]
+tests/test_pawpal.py::TestScheduler::test_build_schedule_contains_pet_tasks PASSED                               [ 86%]
+tests/test_pawpal.py::TestScheduler::test_generate_plan_respects_time_budget PASSED                              [ 93%]
+tests/test_pawpal.py::TestScheduler::test_generate_plan_high_priority_first PASSED                               [100%]
+
 
 ## 📐 Smarter Scheduling
 
