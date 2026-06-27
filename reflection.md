@@ -18,6 +18,8 @@ No the desgin did not change much from when I initally implemented it.
 **a. Constraints and priorities**
 
 Sorting uses sort_by_time(), which calls sorted() with a lambda key on task.detail.scheduled_time — tasks with no time set fall to the end. Filtering uses filter_tasks(), which narrows a task list by pet name, completion status, or both. Recurring tasks are handled by mark_complete(), which clones the finished task and sets its due_date forward by one day or one week using timedelta. Conflict detection uses detect_conflicts(), which checks for two tasks sharing the exact same time slot and returns a warning object instead of crashing.
+
+
 **b. Tradeoffs**
 
 The conflict detector only catches tasks scheduled at the exact same time. It won't warn you if a 30-minute walk at 8:00 and a feeding at 8:10 overlap in practice. This was a deliberate choice — checking for duration overlap is more complex and depends on duration estimates being accurate, which user-entered data often isn't. The simpler approach is easier to read and covers the most common mistake
