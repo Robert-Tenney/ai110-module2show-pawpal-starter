@@ -38,8 +38,7 @@ I really couldn't find a moment where I disagreed with the output the AI(Claude)
 
 **a. What you tested**
 
-- What behaviors did you test?
-- Why were these tests important?
+I tested to see what would happen if someone entered the same information multiple times which is important since it could cause the system to repeat the same outputs mutliple times which could cause the application to crash.
 
 **b. Confidence**
 
