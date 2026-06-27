@@ -50,8 +50,7 @@ I am fairly confident that my scheduler works but if I had more time to test it 
 ## 5. Reflection
 
 **a. What went well**
-
-- What part of this project are you most satisfied with?
+I was the most satified with using an AI program to help me ensure everying this was phrased corrected and using it to include icons in my response since it look like a fun thing to do.
 
 **b. What you would improve**
 
