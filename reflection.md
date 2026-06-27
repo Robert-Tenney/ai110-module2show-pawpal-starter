@@ -29,6 +29,7 @@ The conflict detector only catches tasks scheduled at the exact same time. It wo
 
 I used AI to help trouble shoot code and to help make my summaries more clear and precise in the form of detecting spelling and grammar errors.In additon I used AI to reformat some responses to include emojis since I have no idea on how to do it.
 
+
 **b. Judgment and verification**
 
 I really couldn't find a moment where I disagreed with the output the AI(Claude) gave me since I used the same logic I tend to need being precise and detailed instruction on what is needed for the output.
